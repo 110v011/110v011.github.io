@@ -6,9 +6,22 @@
     <title>petit engineer</title>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet" integrity="sha384-T3c6CoIi6uLrA9TneNEoa7RxnatzjcDSCmG1MXxSR1GAsXEV/Dwwykc2MPK8M2HN" crossorigin="anonymous">
     <style>
+        .movie_blk {
+    width: 100%;
+    height: 300px;
+    position: relative;
+    }
+    .movie_blk video {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    position: absolute;
+    top: 0;
+    left: 0;
+    }
     </style>
 </head>
-<body background="image1.jpeg">
+<body>
 <header>
     <nav class="navbar bg-body-tertiary fixed-top">
         <div class="container-fluid">
@@ -17,6 +30,7 @@
     </nav>
 </header>
 <main>
+    <video src="sample_movie.mp4" autoplay muted loop playsinline></video>
     <h2>   </h2>
     <h2>   </h2>
     <h2>   </h2>
