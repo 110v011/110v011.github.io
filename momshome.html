@@ -1,0 +1,66 @@
+<html>
+<title>home - moms教</title>
+<head>
+<style>
+.headdiv {
+display: flex;
+}
+.head1 {
+width: 50%;
+text-align: left;
+}
+.head2 {
+width: 50%;
+text-align: right;
+}
+.center {
+text-align: center;
+width: 100%;
+}
+.centerflex {
+display: flex;
+}
+.centertopic1 {
+text-align: left;
+width: 80%;
+}
+.centertopic2 {
+text-align: left;
+width: 20%;
+background-color: orange;
+}
+</style>
+</head>
+<body>
+<div class="headdiv">
+<div class="head1">
+<p>mom's - home<input type="number" id="gift"></input><button onclick="GiftSearch()">ギフトコードを検索</button></p>
+</div>
+<div class="head2">
+<p>momsアカウントでログインしています<button onclick="Logout()">Logout</button></p>
+</div>
+</div>
+<div class="center">
+<div class="centerflex">
+<div class="centertopic1">
+<p>ようこそ<br>ここは私の広大なローカルインターネットサービスの原点です。<br></p>
+</div>
+<div class="centertopic2">
+<marquee><p>ようこそ</p></marquee>
+</div>
+</div>
+</div>
+</body>
+<script>
+function GiftSearch() {
+const GiftCode = document.getElementById("gift").value;
+const GiftUrl = "gift/" + GiftCode + ".html";
+window.location.href=GiftUrl;
+}
+
+function Logout() {
+alert ("ログアウトします");
+window.location.href="kakuretext.html";
+}
+</script>
+</html>

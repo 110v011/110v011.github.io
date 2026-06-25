@@ -1,0 +1,68 @@
+<html>
+<title>Login - moms教</title>
+<head>
+<script></script>
+<style>
+.textinput {
+border-color: skyblue;
+}
+.center {
+width: 100%;
+height: 85%
+}
+.downlogo {
+width: 100%;
+height: 15%;
+text-align: center;
+}
+code {
+background-color: black;
+}
+</style>
+</head>
+<body>
+<div class="center">
+<p>login<br><code><font color="yellow">ユーザー名</font></code>、<code><font color="red">パスワード</font></code>を入力してデータを閲覧します。</p>
+<p>ユーザー名<input class="textinput" id="username" value="user"></input><br>パスワード<input class="textinput" id="password"></input><button class="textinput" onclick="certificate()">ログイン</button></p>
+</div>
+<div class="downlogo">
+<p>powerd by shumai01414 proglam company ©2022-2026</p>
+</div>
+</body>
+<script>
+function certificate() {
+const UserName = document.getElementById("username").value;
+const PassWord = document.getElementById("password").value;
+
+//ユーザー名を指定してください
+
+const CorrectUser = "mom";
+
+//パスワードを指定してください
+
+const CorrectPass = "momsisgod123";
+
+//パスワード認証成功・不成功時に表示するメッセージを指定してください
+
+const CorrectText = "リダイレクトします";
+const InCorrectText = "ユーザー名かパスワードが間違っています。もう一度お試しください。";
+
+//パスワード認証成功時にリダイレクトするページを指定してください
+
+const Location = "momshome.html";
+
+if (UserName == CorrectUser) {
+if (PassWord == CorrectPass){
+alert (CorrectText);
+window.location.href=Location;
+} else {
+alert (InCorrectText);
+window.location.reload();
+}
+} else {
+alert (InCorrectText);
+window.location.reload();
+}
+}
+</script>
+</html>
