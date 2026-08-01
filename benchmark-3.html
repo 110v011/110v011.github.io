@@ -1,0 +1,185 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<title>WebGL2 強化版 ベンチマーク</title>
+<style>
+  body { font-family: system-ui; background: #111; color: #fff; text-align: center; }
+  canvas { background: #000; margin-top: 20px; border-radius: 8px; }
+  #fps, #score { font-size: 22px; margin-top: 10px; }
+  #controls { margin-top: 20px; }
+  select, button { font-size: 18px; padding: 6px 12px; }
+</style>
+</head>
+<body>
+
+<h1>WebGL2 強化版 CPU + GPU ベンチ</h1>
+
+<div id="controls">
+  <select id="preset">
+    <option value="low">低負荷</option>
+    <option value="mid">中負荷</option>
+    <option value="high">高負荷</option>
+  </select>
+  <button id="startBtn">ベンチ開始</button>
+</div>
+
+<div id="fps">FPS: --</div>
+<div id="score">Score: --</div>
+
+<canvas id="glCanvas" width="600" height="400"></canvas>
+
+<script>
+const canvas = document.getElementById("glCanvas");
+const gl = canvas.getContext("webgl2");
+
+const fpsLabel = document.getElementById("fps");
+const scoreLabel = document.getElementById("score");
+const presetSelect = document.getElementById("preset");
+
+let lastTime = performance.now();
+let fps = 0;
+let running = false;
+let frameCount = 0;
+let fpsSum = 0;
+
+// 負荷プリセット
+const presets = {
+  low:  { cpu: 10,  gpu: 5000 },
+  mid:  { cpu: 40,  gpu: 20000 },
+  high: { cpu: 80,  gpu: 60000 }
+};
+
+// WebGL2 シェーダ
+const vsSrc = `#version 300 es
+layout(location = 0) in vec2 basePos;
+layout(location = 1) in vec2 offset;
+uniform float time;
+void main() {
+  vec2 p = basePos + offset;
+  p.x += sin(time + offset.y * 10.0) * 0.02;
+  p.y += cos(time + offset.x * 10.0) * 0.02;
+  gl_PointSize = 2.5;
+  gl_Position = vec4(p, 0.0, 1.0);
+}`;
+const fsSrc = `#version 300 es
+precision highp float;
+out vec4 outColor;
+void main() {
+  float d = length(gl_PointCoord - vec2(0.5));
+  float alpha = smoothstep(0.5, 0.0, d);
+  outColor = vec4(0.2, 0.7, 1.0, alpha);
+}`;
+
+function compile(type, src) {
+  const sh = gl.createShader(type);
+  gl.shaderSource(sh, src);
+  gl.compileShader(sh);
+  return sh;
+}
+
+const vs = compile(gl.VERTEX_SHADER, vsSrc);
+const fs = compile(gl.FRAGMENT_SHADER, fsSrc);
+const program = gl.createProgram();
+gl.attachShader(program, vs);
+gl.attachShader(program, fs);
+gl.linkProgram(program);
+gl.useProgram(program);
+
+const timeLoc = gl.getUniformLocation(program, "time");
+
+// basePos（1点）
+const basePosBuffer = gl.createBuffer();
+gl.bindBuffer(gl.ARRAY_BUFFER, basePosBuffer);
+gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([0, 0]), gl.STATIC_DRAW);
+gl.enableVertexAttribArray(0);
+gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
+
+// offset（インスタンス位置）
+const offsetBuffer = gl.createBuffer();
+gl.bindBuffer(gl.ARRAY_BUFFER, offsetBuffer);
+gl.enableVertexAttribArray(1);
+gl.vertexAttribPointer(1, 2, gl.FLOAT, false, 0, 0);
+gl.vertexAttribDivisor(1, 1);
+
+// CPU負荷
+function cpuLoad(level) {
+  const loops = level * 4000;
+  let x = 0;
+  for (let i = 0; i < loops; i++) {
+    x += Math.sqrt(i % 100);
+  }
+}
+
+// GPU負荷（インスタンス位置生成）
+function gpuLoad(count, time) {
+  const data = new Float32Array(count * 2);
+  for (let i = 0; i < count; i++) {
+    const idx = i * 2;
+    data[idx]     = Math.random() * 2 - 1;
+    data[idx + 1] = Math.random() * 2 - 1;
+  }
+  gl.bindBuffer(gl.ARRAY_BUFFER, offsetBuffer);
+  gl.bufferData(gl.ARRAY_BUFFER, data, gl.DYNAMIC_DRAW);
+
+  gl.uniform1f(timeLoc, time * 0.001);
+
+  gl.clear(gl.COLOR_BUFFER_BIT);
+  gl.drawArraysInstanced(gl.POINTS, 0, 1, count);
+}
+
+// メインループ
+function loop(cpu, gpu) {
+  if (!running) return;
+
+  const now = performance.now();
+  fps = 1000 / (now - lastTime);
+  lastTime = now;
+
+  frameCount++;
+  fpsSum += fps;
+
+  cpuLoad(cpu);
+  gpuLoad(gpu, now);
+
+  fpsLabel.textContent = "FPS: " + fps.toFixed(1);
+
+  requestAnimationFrame(() => loop(cpu, gpu));
+}
+
+// スコア計算
+function calcScore(cpu, gpu) {
+  // フレームが1回も描画されていない場合は安全に処理
+  if (frameCount === 0) {
+    scoreLabel.textContent = "Score: 0 (no frames)";
+    return;
+  }
+
+  const avgFPS = fpsSum / frameCount;
+
+  // avgFPS が NaN や Infinity の場合も安全に潰す
+  const safeAvgFPS = Number.isFinite(avgFPS) ? avgFPS : 0;
+
+  const score = Math.round(safeAvgFPS * 10 + gpu / 200 - cpu * 2);
+  scoreLabel.textContent = "Score: " + score;
+}
+
+document.getElementById("startBtn").onclick = () => {
+  const preset = presets[presetSelect.value];
+
+  running = true;
+  frameCount = 0;
+  fpsSum = 0;
+  lastTime = performance.now();
+
+  loop(preset.cpu, preset.gpu);
+
+  setTimeout(() => {
+    running = false;
+    calcScore(preset.cpu, preset.gpu);
+  }, 10000);
+};
+</script>
+
+</body>
+</html>
