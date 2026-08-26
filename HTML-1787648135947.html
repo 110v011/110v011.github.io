@@ -1,0 +1,586 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8" />
+<title>CRTレトロダークゲーム</title>
+<style>
+  body {
+    margin: 0;
+    background: #000;
+    color: #e0e0e0;
+    font-family: "Press Start 2P", system-ui, monospace;
+    overflow: hidden;
+  }
+
+  canvas {
+    display: block;
+    margin: 0 auto;
+    background: #000;
+    border: 2px solid #404050;
+    box-shadow: 0 0 25px #000;
+  }
+
+  #ui {
+    position: fixed;
+    top: 8px;
+    left: 50%;
+    transform: translateX(-50%);
+    color: #b0ffb0;
+    text-shadow: 0 0 4px #000;
+    font-size: 12px;
+    display: none;
+  }
+
+  #ui span { margin: 0 10px; }
+
+  #msg {
+    position: fixed;
+    bottom: 12px;
+    left: 50%;
+    transform: translateX(-50%);
+    font-size: 10px;
+    color: #8888ff;
+    text-shadow: 0 0 4px #000;
+  }
+</style>
+</head>
+<body>
+
+<div id="ui">
+  <span>HP: <span id="hp">5</span></span>
+  <span>スコア: <span id="score">0</span></span>
+  <span>矢印キー：移動 / スペース：ショット</span>
+</div>
+<div id="msg"></div>
+
+<canvas id="game" width="480" height="270"></canvas>
+
+<script>
+const canvas = document.getElementById("game");
+const ctx = canvas.getContext("2d");
+
+const hpEl = document.getElementById("hp");
+const scoreEl = document.getElementById("score");
+const uiEl = document.getElementById("ui");
+const msgEl = document.getElementById("msg");
+
+const W = canvas.width;
+const H = canvas.height;
+
+let gameState = "title";
+
+let titleFlicker = 0;
+let titleNoiseBoost = 0;
+
+const keys = {};
+document.addEventListener("keydown", e => keys[e.code] = true);
+document.addEventListener("keyup", e => keys[e.code] = false);
+
+// Web Audio API（レトロ効果音）
+const audio = new (window.AudioContext || window.webkitAudioContext)();
+
+function playSound(type) {
+  const osc = audio.createOscillator();
+  const gain = audio.createGain();
+  osc.connect(gain);
+  gain.connect(audio.destination);
+
+  if (type === "shot") {
+    osc.type = "square";
+    osc.frequency.setValueAtTime(440, audio.currentTime);
+    gain.gain.setValueAtTime(0.2, audio.currentTime);
+    gain.gain.exponentialRampToValueAtTime(0.01, audio.currentTime + 0.15);
+  }
+
+  if (type === "explosion") {
+    osc.type = "sawtooth";
+    osc.frequency.setValueAtTime(80, audio.currentTime);
+    osc.frequency.exponentialRampToValueAtTime(20, audio.currentTime + 0.3);
+    gain.gain.setValueAtTime(0.4, audio.currentTime);
+    gain.gain.exponentialRampToValueAtTime(0.01, audio.currentTime + 0.3);
+  }
+
+  if (type === "damage") {
+    osc.type = "triangle";
+    osc.frequency.setValueAtTime(200, audio.currentTime);
+    osc.frequency.exponentialRampToValueAtTime(40, audio.currentTime + 0.2);
+    gain.gain.setValueAtTime(0.3, audio.currentTime);
+    gain.gain.exponentialRampToValueAtTime(0.01, audio.currentTime + 0.2);
+  }
+
+  osc.start();
+  osc.stop(audio.currentTime + 0.4);
+}
+
+// プレイヤー
+const player = {
+  x: W / 2,
+  y: H - 40,
+  w: 12,
+  h: 12,
+  speed: 2.2,
+  color: "#b0ffb0",
+  hp: 5
+};
+
+const bullets = [];
+const enemies = [];
+const particles = [];
+const noisePixels = [];
+const enemyBullets = []; // ← 散弾敵の弾
+
+let score = 0;
+let spawnTimer = 0;
+let gameOver = false;
+let blinkTimer = 0;
+
+// ショット
+function shoot() {
+  bullets.push({
+    x: player.x,
+    y: player.y - 8,
+    w: 2,
+    h: 6,
+    speed: 4,
+    color: "#ffdd88"
+  });
+  playSound("shot");
+}
+
+document.addEventListener("keydown", e => {
+  if (e.code === "Enter") {
+    if (gameState === "title") startGame();
+    else if (gameOver) resetGame();
+  }
+
+  if (e.code === "Space" && gameState === "game" && !gameOver) shoot();
+});
+
+// ゲーム開始
+function startGame() {
+  gameState = "game";
+  uiEl.style.display = "block";
+  msgEl.textContent = "闇の中から現れる敵を倒せ…";
+
+
+  playBattleBGM(); // ← 戦闘BGM再生
+}
+
+// リセット
+function resetGame() {
+  player.x = W / 2;
+  player.y = H - 40;
+  player.hp = 5;
+  bullets.length = 0;
+  enemies.length = 0;
+  particles.length = 0;
+  enemyBullets.length = 0;
+  score = 0;
+  spawnTimer = 0;
+  gameOver = false;
+  hpEl.textContent = player.hp;
+  scoreEl.textContent = score;
+  msgEl.textContent = "闇の中から現れる敵を倒せ…";
+}
+
+// 通常敵生成
+function spawnEnemy() {
+  const size = 10 + Math.random() * 10;
+  enemies.push({
+    type: "normal",
+    x: Math.random() * (W - size),
+    y: -size,
+    w: size,
+    h: size,
+    speed: 0.5 + Math.random() * 1.2,
+    color: "#ff4444",
+    flicker: Math.random() * 10,
+    shootTimer: 0
+  });
+}
+
+// 散弾敵生成（スコア300以上）
+function spawnShooterEnemy() {
+  const size = 18;
+  enemies.push({
+    type: "shooter",
+    x: Math.random() * (W - size),
+    y: -size,
+    w: size,
+    h: size,
+    speed: 0.8,
+    color: "#ff8844",
+    flicker: Math.random() * 10,
+    shootTimer: 0
+  });
+}
+
+// 破片生成
+function createParticles(x, y, color) {
+  for (let i = 0; i < 12; i++) {
+    particles.push({
+      x,
+      y,
+      vx: (Math.random() - 0.5) * 2.5,
+      vy: (Math.random() - 0.5) * 2.5,
+      size: 2 + Math.random() * 2,
+      life: 20 + Math.random() * 10,
+      color
+    });
+  }
+}
+
+// ノイズ生成
+function generateNoise() {
+  noisePixels.length = 0;
+  for (let i = 0; i < 200; i++) {
+    noisePixels.push({
+      x: Math.random() * W,
+      y: Math.random() * H,
+      alpha: Math.random() * 0.25
+    });
+  }
+}
+
+// ロールバー
+let rollY = -50;
+function drawRollBar() {
+  rollY += 1.2;
+  if (rollY > H + 50) rollY = -50;
+
+  const grd = ctx.createLinearGradient(0, rollY - 40, 0, rollY + 40);
+  grd.addColorStop(0, "rgba(255,255,255,0)");
+  grd.addColorStop(0.5, "rgba(255,255,255,0.12)");
+  grd.addColorStop(1, "rgba(255,255,255,0)");
+
+  ctx.fillStyle = grd;
+  ctx.fillRect(0, rollY - 40, W, 80);
+}
+
+// 散弾敵の弾ばらまき
+function shooterEnemyShoot(e) {
+  const count = 12;
+  for (let i = 0; i < count; i++) {
+    const angle = (Math.PI * 2 / count) * i;
+    enemyBullets.push({
+      x: e.x + e.w / 2,
+      y: e.y + e.h / 2,
+      vx: Math.cos(angle) * 1.5,
+      vy: Math.sin(angle) * 1.5,
+      size: 3,
+      color: "#ffaa55"
+    });
+  }
+}
+
+// 更新
+function update() {
+  if (gameState === "title") {
+    blinkTimer++;
+    generateNoise();
+    return;
+  }
+
+  if (gameOver) return;
+
+  // プレイヤー移動
+  if (keys["ArrowLeft"]) player.x -= player.speed;
+  if (keys["ArrowRight"]) player.x += player.speed;
+  if (keys["ArrowUp"]) player.y -= player.speed;
+  if (keys["ArrowDown"]) player.y += player.speed;
+
+  player.x = Math.max(8, Math.min(W - 8, player.x));
+  player.y = Math.max(40, Math.min(H - 8, player.y));
+
+  // 弾
+  for (let i = bullets.length - 1; i >= 0; i--) {
+    const b = bullets[i];
+    b.y -= b.speed;
+    if (b.y < -10) bullets.splice(i, 1);
+  }
+
+  // 敵出現
+  spawnTimer++;
+  if (spawnTimer > 40) {
+    if (score >= 300 && Math.random() < 0.3) {
+      spawnShooterEnemy();
+    } else {
+      spawnEnemy();
+    }
+    spawnTimer = 0;
+  }
+
+  // 敵更新
+  for (let i = enemies.length - 1; i >= 0; i--) {
+    const e = enemies[i];
+    e.y += e.speed;
+    e.flicker += 0.2;
+
+    // 散弾敵の攻撃
+    if (e.type === "shooter") {
+      e.shootTimer++;
+      if (e.shootTimer > 60) {
+        shooterEnemyShoot(e);
+        e.shootTimer = 0;
+      }
+    }
+
+    if (e.y > H + 20) enemies.splice(i, 1);
+  }
+
+  // 散弾敵の弾更新
+  for (let i = enemyBullets.length - 1; i >= 0; i--) {
+    const b = enemyBullets[i];
+    b.x += b.vx;
+    b.y += b.vy;
+    if (b.x < -10 || b.x > W + 10 || b.y < -10 || b.y > H + 10) {
+      enemyBullets.splice(i, 1);
+    }
+  }
+
+  // 弾 vs 敵
+  for (let i = enemies.length - 1; i >= 0; i--) {
+    const e = enemies[i];
+    for (let j = bullets.length - 1; j >= 0; j--) {
+      const b = bullets[j];
+      if (
+        b.x < e.x + e.w &&
+        b.x + b.w > e.x &&
+        b.y < e.y + e.h &&
+        b.y + b.h > e.y
+      ) {
+        createParticles(e.x + e.w / 2, e.y + e.h / 2, e.color);
+        playSound("explosion");
+        enemies.splice(i, 1);
+        bullets.splice(j, 1);
+        score += (e.type === "shooter" ? 30 : 10);
+        scoreEl.textContent = score;
+        break;
+      }
+    }
+  }
+
+  // プレイヤー vs 敵弾
+  for (let i = enemyBullets.length - 1; i >= 0; i--) {
+    const b = enemyBullets[i];
+    if (
+      b.x < player.x + player.w / 2 &&
+      b.x > player.x - player.w / 2 &&
+      b.y < player.y + player.h / 2 &&
+      b.y > player.y - player.h / 2
+    ) {
+      enemyBullets.splice(i, 1);
+      player.hp--;
+      playSound("damage");
+      hpEl.textContent = player.hp;
+      if (player.hp <= 0) {
+        gameOver = true;
+        msgEl.textContent = "GAME OVER - Enterキーで再スタート";
+
+        stopAllBGM();
+        playTitleBGM(); // ← タイトルBGM再生
+      }
+    }
+  }
+
+  // プレイヤー vs 敵本体
+  for (let i = enemies.length - 1; i >= 0; i--) {
+    const e = enemies[i];
+    if (
+      player.x - player.w / 2 < e.x + e.w &&
+      player.x + player.w / 2 > e.x &&
+      player.y - player.h / 2 < e.y + e.h &&
+      player.y + player.h / 2 > e.y
+    ) {
+      enemies.splice(i, 1);
+      player.hp--;
+      playSound("damage");
+      hpEl.textContent = player.hp;
+      if (player.hp <= 0) {
+        gameOver = true;
+        msgEl.textContent = "GAME OVER - Enterキーで再スタート";
+      }
+    }
+  }
+
+  // 破片更新
+  for (let i = particles.length - 1; i >= 0; i--) {
+    const p = particles[i];
+    p.x += p.vx;
+    p.y += p.vy;
+    p.life--;
+    if (p.life <= 0) particles.splice(i, 1);
+  }
+
+  generateNoise();
+}
+
+// 描画
+function draw() {
+  ctx.clearRect(0, 0, W, H);
+
+  // 背景
+  ctx.fillStyle = "#050608";
+  ctx.fillRect(0, 0, W, H);
+
+  // タイトル画面
+  if (gameState === "title") {
+    ctx.fillStyle = "#b0ffb0";
+    ctx.font = "20px 'Press Start 2P'";
+    ctx.textAlign = "center";
+    ctx.fillText("RETRO DARK SHOOTER", W/2, H/2 - 20);
+    playTitleBGM(); // ← タイトルBGM再生
+
+    if (Math.sin(blinkTimer / 20) > 0) {
+      ctx.font = "12px 'Press Start 2P'";
+      ctx.fillText("PRESS ENTER TO START", W/2, H/2 + 20);
+    }
+
+    playTitleBGM(); // ← タイトルBGM再生
+
+    drawCRT();
+    return;
+  }
+
+  // 星
+  for (let i = 0; i < 40; i++) {
+    const x = (i * 37) % W;
+    const y = (i * 53) % H;
+    const alpha = 0.1 + ((i * 13) % 10) / 50;
+    ctx.fillStyle = `rgba(180,180,220,${alpha})`;
+    ctx.fillRect(x, y, 1, 1);
+  }
+
+  // プレイヤー
+  ctx.fillStyle = player.color;
+  ctx.fillRect(player.x - player.w / 2, player.y - player.h / 2, player.w, player.h);
+
+  // 弾
+  bullets.forEach(b => {
+    ctx.fillStyle = b.color;
+    ctx.fillRect(b.x - b.w / 2, b.y - b.h, b.w, b.h);
+  });
+
+  // 敵
+  enemies.forEach(e => {
+    const flicker = (Math.sin(e.flicker) + 1) * 0.5;
+    ctx.fillStyle = `rgba(255,80,80,${0.4 + flicker * 0.6})`;
+    ctx.fillRect(e.x, e.y, e.w, e.h);
+  });
+
+  // 敵弾
+  enemyBullets.forEach(b => {
+    ctx.fillStyle = b.color;
+    ctx.fillRect(b.x - b.size/2, b.y - b.size/2, b.size, b.size);
+  });
+
+  // 破片
+  particles.forEach(p => {
+    ctx.fillStyle = p.color;
+    ctx.fillRect(p.x, p.y, p.size, p.size);
+  });
+
+  // ノイズ
+  noisePixels.forEach(n => {
+    ctx.fillStyle = `rgba(255,255,255,${n.alpha})`;
+    ctx.fillRect(n.x, n.y, 1, 1);
+  });
+
+  drawCRT();
+}
+
+// CRT演出まとめ
+function drawCRT() {
+  // スキャンライン
+  ctx.globalAlpha = 0.12;
+  ctx.fillStyle = "#000";
+  for (let y = 0; y < H; y += 3) ctx.fillRect(0, y, W, 1);
+  ctx.globalAlpha = 1.0;
+
+  // トリニトロン縦線
+  ctx.globalAlpha = 0.08;
+  ctx.fillStyle = "#222";
+  for (let x = 0; x < W; x += 3) ctx.fillRect(x, 0, 1, H);
+  ctx.globalAlpha = 1.0;
+
+  // ロールバー
+  drawRollBar();
+
+  // CRT湾曲
+  ctx.save();
+  ctx.globalCompositeOperation = "overlay";
+  const grd = ctx.createRadialGradient(W/2, H/2, 10, W/2, H/2, W/1.2);
+  grd.addColorStop(0, "rgba(255,255,255,0.05)");
+  grd.addColorStop(1, "rgba(0,0,0,0.6)");
+  ctx.fillStyle = grd;
+  ctx.fillRect(0, 0, W, H);
+  ctx.restore();
+}
+
+/* ============================================================
+   タイトル画面のチラつき描画
+============================================================ */
+function drawTitleFlicker() {
+  titleFlicker += 0.1;
+
+  // 輝度揺れ（sin波）
+  const brightness = 0.15 + Math.abs(Math.sin(titleFlicker)) * 0.25;
+
+  ctx.save();
+  ctx.globalAlpha = brightness;
+  ctx.fillStyle = "#ffffff";
+  ctx.fillRect(0, 0, W, H);
+  ctx.restore();
+
+  // ランダム暗転（古いCRTのノイズ）
+  if (Math.random() < 0.03) {
+    ctx.save();
+    ctx.globalAlpha = 0.2;
+    ctx.fillStyle = "#000";
+    ctx.fillRect(0, 0, W, H);
+    ctx.restore();
+  }
+}
+
+// ===============================
+// BGM（ユーザーの音楽ファイルを使用）
+// ===============================
+let titleAudio = new Audio("title.mp3");
+let battleAudio = new Audio("battle.mp3");
+
+// ループ再生
+titleAudio.loop = true;
+battleAudio.loop = true;
+
+// 音量（調整可能）
+titleAudio.volume = 0.5;
+battleAudio.volume = 0.5;
+
+function stopAllBGM() {
+  titleAudio.pause();
+  battleAudio.pause();
+}
+
+function playTitleBGM() {
+  stopAllBGM();
+  titleAudio.currentTime = 0;
+  titleAudio.play();
+}
+
+function playBattleBGM() {
+  stopAllBGM();
+  battleAudio.currentTime = 0;
+  battleAudio.play();
+}
+
+function loop() {
+  update();
+  draw();
+  requestAnimationFrame(loop);
+}
+
+loop();
+</script>
+
+</body>
+</html>
