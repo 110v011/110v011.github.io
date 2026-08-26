@@ -162,8 +162,14 @@ function startGame() {
   uiEl.style.display = "block";
   msgEl.textContent = "闇の中から現れる敵を倒せ…";
 
-
   playBattleBGM(); // ← 戦闘BGM再生
+
+  scoreTimer = setInterval(() => {
+    if (!gameOver) {
+      score += 2;
+      scoreEl.textContent = score;
+    }
+  }, 1000);
 }
 
 // リセット
@@ -181,6 +187,14 @@ function resetGame() {
   hpEl.textContent = player.hp;
   scoreEl.textContent = score;
   msgEl.textContent = "闇の中から現れる敵を倒せ…";
+
+  // ★再スタート時もタイマー開始
+  scoreTimer = setInterval(() => {
+    if (!gameOver) {
+      score += 2;
+      scoreEl.textContent = score;
+    }
+  }, 1000);
 }
 
 // 通常敵生成
@@ -379,6 +393,8 @@ function update() {
 
         stopAllBGM();
         playTitleBGM(); // ← タイトルBGM再生
+
+        clearInterval(scoreTimer); // ★タイマー停止
       }
     }
   }
