@@ -1,0 +1,37 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8" />
+  <title>異常ルールタイピングゲーム</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <div id="game-container">
+    <div id="overlay">
+      <h1>異常ルールタイピングゲーム</h1>
+      <p>・表示されている単語をタイプしてください<br>
+         ・レベルが上がると「あり得ないルール」が追加されます<br>
+         ・ミスすると画面がどんどんカオスになります</p>
+      <button id="start-btn">ゲーム開始</button>
+    </div>
+
+    <div id="hud">
+      <div class="hud-item">レベル: <span id="level">1</span></div>
+      <div class="hud-item">スコア: <span id="score">0</span></div>
+      <div class="hud-item">残り時間: <span id="time">30</span>s</div>
+      <div class="hud-item">ルール: <span id="rule-text">通常ルール</span></div>
+    </div>
+
+    <div id="visual-layer"></div>
+
+    <div id="word-area">
+      <div id="current-word"></div>
+      <input id="input" type="text" autocomplete="off" placeholder="ここにタイプ" />
+    </div>
+
+    <div id="message"></div>
+  </div>
+
+  <script src="script.js"></script>
+</body>
+</html>
