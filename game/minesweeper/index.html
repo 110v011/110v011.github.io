@@ -1,0 +1,309 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<title>XP風マインスイーパー</title>
+<style>
+  body {
+    font-family: "MS UI Gothic", sans-serif;
+    background: #0080ff;
+    margin: 0;
+    padding: 20px;
+    display: flex;
+    justify-content: center;
+  }
+
+  /* XP風ウィンドウ */
+  #window {
+    background: #c0c0c0;
+    border: 2px solid #000;
+    width: fit-content;
+    padding: 10px;
+  }
+
+  /* タイトルバー */
+  #titlebar {
+    background: linear-gradient(#0a4bd1, #0a4bd1 50%, #0a4bd1);
+    color: white;
+    padding: 4px 8px;
+    font-weight: bold;
+    margin-bottom: 10px;
+  }
+
+  /* コントロールパネル */
+  #controls {
+    background: #e0e0e0;
+    padding: 6px;
+    border: 2px solid #fff;
+    border-right-color: #808080;
+    border-bottom-color: #808080;
+    margin-bottom: 10px;
+  }
+
+  /* XP風ボタン */
+  button {
+    font-family: "MS UI Gothic";
+    padding: 4px 10px;
+    border: 2px solid #fff;
+    border-right-color: #808080;
+    border-bottom-color: #808080;
+    background: #e0e0e0;
+    cursor: pointer;
+  }
+  button:active {
+    border: 2px solid #808080;
+    border-right-color: #fff;
+    border-bottom-color: #fff;
+  }
+
+  /* 盤面 */
+  #board {
+    display: grid;
+    gap: 1px;
+    background: #808080;
+    padding: 4px;
+  }
+
+  .cell {
+    width: 24px;
+    height: 24px;
+    background: #c0c0c0;
+    border: 2px solid #fff;
+    border-right-color: #808080;
+    border-bottom-color: #808080;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    font-size: 16px;
+    cursor: pointer;
+    user-select: none;
+  }
+
+  .revealed {
+    background: #e0e0e0;
+    border: 1px solid #808080;
+  }
+
+  .mine {
+    background: #ff6666;
+  }
+
+  .flag {
+    background: #ffd966;
+  }
+</style>
+</head>
+<body>
+
+<div id="window">
+  <div id="titlebar">Minesweeper - XP Edition</div>
+
+  <div id="controls">
+    難易度:
+    <select id="difficulty">
+      <option value="beginner">初級 (9×9 / 10)</option>
+      <option value="intermediate">中級 (16×16 / 40)</option>
+      <option value="expert">上級 (30×16 / 99)</option>
+      <option value="custom">カスタム</option>
+    </select>
+
+    <span id="customInputs" style="display:none;">
+      行 <input type="number" id="rows" value="10" min="5" max="40" style="width:50px;">
+      列 <input type="number" id="cols" value="10" min="5" max="40" style="width:50px;">
+      地雷 <input type="number" id="mines" value="10" min="1" max="300" style="width:60px;">
+    </span>
+
+    <button id="startBtn">開始</button>
+  </div>
+
+  <div id="board"></div>
+</div>
+
+<script>
+  const boardEl = document.getElementById("board");
+  const difficultyEl = document.getElementById("difficulty");
+  const customInputs = document.getElementById("customInputs");
+
+  let board = [];
+  let ROWS = 9;
+  let COLS = 9;
+  let MINES = 10;
+  let gameOver = false;
+
+  difficultyEl.addEventListener("change", () => {
+    customInputs.style.display = difficultyEl.value === "custom" ? "inline" : "none";
+  });
+
+  document.getElementById("startBtn").addEventListener("click", () => {
+    setDifficulty();
+    createBoard();
+  });
+
+  function setDifficulty() {
+    const diff = difficultyEl.value;
+
+    if (diff === "beginner") {
+      ROWS = 9; COLS = 9; MINES = 10;
+    } else if (diff === "intermediate") {
+      ROWS = 16; COLS = 16; MINES = 40;
+    } else if (diff === "expert") {
+      ROWS = 16; COLS = 30; MINES = 99;
+    } else {
+      ROWS = parseInt(document.getElementById("rows").value);
+      COLS = parseInt(document.getElementById("cols").value);
+      MINES = parseInt(document.getElementById("mines").value);
+    }
+  }
+
+  function createBoard() {
+    boardEl.innerHTML = "";
+    boardEl.style.gridTemplateColumns = `repeat(${COLS}, 24px)`;
+    board = [];
+    gameOver = false;
+
+    for (let r = 0; r < ROWS; r++) {
+      board[r] = [];
+      for (let c = 0; c < COLS; c++) {
+        board[r][c] = {
+          isMine: false,
+          revealed: false,
+          flagged: false,
+          count: 0,
+          el: null
+        };
+      }
+    }
+
+    // 地雷配置
+    let placed = 0;
+    while (placed < MINES) {
+      const r = Math.floor(Math.random() * ROWS);
+      const c = Math.floor(Math.random() * COLS);
+      if (!board[r][c].isMine) {
+        board[r][c].isMine = true;
+        placed++;
+      }
+    }
+
+    // 数字計算
+    for (let r = 0; r < ROWS; r++) {
+      for (let c = 0; c < COLS; c++) {
+        if (board[r][c].isMine) continue;
+        let count = 0;
+        for (let dr = -1; dr <= 1; dr++) {
+          for (let dc = -1; dc <= 1; dc++) {
+            const nr = r + dr, nc = c + dc;
+            if (nr < 0 || nr >= ROWS || nc < 0 || nc >= COLS) continue;
+            if (board[nr][nc].isMine) count++;
+          }
+        }
+        board[r][c].count = count;
+      }
+    }
+
+    // DOM生成
+    for (let r = 0; r < ROWS; r++) {
+      for (let c = 0; c < COLS; c++) {
+        const cellEl = document.createElement("div");
+        cellEl.className = "cell";
+        cellEl.dataset.row = r;
+        cellEl.dataset.col = c;
+
+        cellEl.addEventListener("click", onLeftClick);
+        cellEl.addEventListener("contextmenu", onRightClick);
+
+        board[r][c].el = cellEl;
+        boardEl.appendChild(cellEl);
+      }
+    }
+  }
+
+  function onLeftClick(e) {
+    if (gameOver) return;
+    const r = parseInt(e.target.dataset.row);
+    const c = parseInt(e.target.dataset.col);
+    const cell = board[r][c];
+
+    if (cell.flagged || cell.revealed) return;
+
+    reveal(r, c);
+    checkWin();
+  }
+
+  function onRightClick(e) {
+    e.preventDefault();
+    if (gameOver) return;
+
+    const r = parseInt(e.target.dataset.row);
+    const c = parseInt(e.target.dataset.col);
+    const cell = board[r][c];
+
+    if (cell.revealed) return;
+
+    cell.flagged = !cell.flagged;
+    cell.el.classList.toggle("flag");
+    cell.el.textContent = cell.flagged ? "🚩" : "";
+  }
+
+  function reveal(r, c) {
+    const cell = board[r][c];
+    if (cell.revealed || cell.flagged) return;
+
+    cell.revealed = true;
+    cell.el.classList.add("revealed");
+
+    if (cell.isMine) {
+      cell.el.textContent = "💣";
+      cell.el.classList.add("mine");
+      gameOver = true;
+      revealAllMines();
+      return;
+    }
+
+    if (cell.count > 0) {
+      cell.el.textContent = cell.count;
+    } else {
+      // 周囲展開
+      for (let dr = -1; dr <= 1; dr++) {
+        for (let dc = -1; dc <= 1; dc++) {
+          const nr = r + dr, nc = c + dc;
+          if (nr < 0 || nr >= ROWS || nc < 0 || nc >= COLS) continue;
+          reveal(nr, nc);
+        }
+      }
+    }
+  }
+
+  function revealAllMines() {
+    for (let r = 0; r < ROWS; r++) {
+      for (let c = 0; c < COLS; c++) {
+        if (board[r][c].isMine) {
+          board[r][c].el.classList.add("revealed", "mine");
+          board[r][c].el.textContent = "💣";
+        }
+      }
+    }
+  }
+
+  function checkWin() {
+    let safe = 0;
+    const totalSafe = ROWS * COLS - MINES;
+
+    for (let r = 0; r < ROWS; r++) {
+      for (let c = 0; c < COLS; c++) {
+        if (!board[r][c].isMine && board[r][c].revealed) safe++;
+      }
+    }
+
+    if (safe === totalSafe) {
+      alert("クリア！おめでとう！");
+      gameOver = true;
+    }
+  }
+
+  // 初期化
+  createBoard();
+</script>
+
+</body>
+</html>
