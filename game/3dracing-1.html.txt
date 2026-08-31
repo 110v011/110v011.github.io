@@ -1,0 +1,526 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8" />
+<title>Racing - Fences, Offroad, Stable Collisions</title>
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<style>
+  html,body { height:100%; margin:0; overflow:hidden; font-family:system-ui, -apple-system, "Segoe UI", Roboto; background:#111; }
+  #ui { position:absolute; left:12px; top:12px; z-index:10; background:rgba(0,0,0,0.55); color:#fff; padding:10px; border-radius:8px; width:360px; }
+  .stat { display:flex; justify-content:space-between; margin:6px 0; }
+  button { margin-top:8px; width:100%; padding:8px; border-radius:6px; border:0; background:#1e90ff; color:#fff; cursor:pointer; }
+  #canvas-container { width:100%; height:100%; display:block; }
+  #hud { position:absolute; right:12px; top:12px; color:#fff; z-index:10; background:rgba(0,0,0,0.25); padding:8px; border-radius:8px; min-width:180px; }
+  #messages { font-size:12px; margin-top:6px; color:#ffdddd; }
+  .small { font-size:12px; color:#ddd; }
+</style>
+</head>
+<body>
+<div id="ui">
+  <h3>車の強化</h3>
+  <div class="stat"><span>スピード</span><span id="stat-speed">1.0</span></div>
+  <div class="stat"><span>ハンドリング</span><span id="stat-handling">1.0</span></div>
+  <div class="stat"><span>グリップ</span><span id="stat-grip">1.0</span></div>
+  <button id="upgrade-speed">スピード +0.2（100）</button>
+  <button id="upgrade-handling">ハンドリング +0.1（80）</button>
+  <button id="upgrade-grip">グリップ +0.1（80）</button>
+  <button id="reset">リセット</button>
+  <div class="small" style="margin-top:8px">所持金: <span id="money">300</span></div>
+  <div class="small">衝突: <span id="collisions">0</span></div>
+  <div id="messages"></div>
+</div>
+<div id="hud">速度: <span id="hud-speed">0</span> km/h</div>
+<div id="canvas-container"></div>
+
+<script src="https://cdn.jsdelivr.net/npm/three@0.154.0/build/three.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/three@0.154.0/examples/js/controls/OrbitControls.js"></script>
+
+<script>
+// ======= 設定 =======
+const SETTINGS = {
+  trackHalfWidth: 9.0,          // 幅を広げて走りやすく
+  treeCount: 120,
+  fenceSpacing: 6.0,           // フェンスポスト間隔
+  fenceHeight: 2.2,
+  baseSpeed: 0.6,
+  spatialCellSize: 80,
+  centerSampleCount: 3000,
+  offroadDrag: 0.85,           // オフロード時の速度減衰係数（0..1）
+  fenceCollisionRadius: 0.9
+};
+
+// ======= 高さ関数 =======
+function getHeightAt(x, z) {
+  const s = 0.002;
+  let h = Math.sin(x*s*2.0)*8 + Math.cos(z*s*1.5)*6 + Math.sin((x+z)*s*1.2)*4;
+  h += Math.sin((x*0.01 + z*0.01) * Math.PI * 2) * 2;
+  return h;
+}
+
+// ======= Three.js 初期化 =======
+const container = document.getElementById('canvas-container');
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x87ceeb);
+
+const camera = new THREE.PerspectiveCamera(60, window.innerWidth/window.innerHeight, 0.1, 5000);
+camera.position.set(0, 20, 60);
+
+const renderer = new THREE.WebGLRenderer({ antialias:true });
+renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+container.appendChild(renderer.domElement);
+
+const hemi = new THREE.HemisphereLight(0xffffff, 0x444444, 0.9);
+scene.add(hemi);
+const dir = new THREE.DirectionalLight(0xffffff, 0.9);
+dir.position.set(100,200,100);
+dir.castShadow = true;
+dir.shadow.mapSize.set(2048,2048);
+dir.shadow.camera.left = -600; dir.shadow.camera.right = 600; dir.shadow.camera.top = 600; dir.shadow.camera.bottom = -600;
+scene.add(dir);
+
+// ======= 地形 =======
+function createTerrain(size=6000, segments=300) {
+  const geo = new THREE.PlaneGeometry(size, size, segments, segments);
+  geo.rotateX(-Math.PI/2);
+  const verts = geo.attributes.position;
+  for (let i=0;i<verts.count;i++){
+    const x = verts.getX(i);
+    const z = verts.getZ(i);
+    const y = getHeightAt(x, z) - 0.5;
+    verts.setY(i, y);
+  }
+  geo.computeVertexNormals();
+  const mat = new THREE.MeshStandardMaterial({ color:0x2e8b57 });
+  const mesh = new THREE.Mesh(geo, mat);
+  mesh.receiveShadow = true;
+  return mesh;
+}
+const terrain = createTerrain(6000, 300);
+scene.add(terrain);
+
+// ======= 中心線（CatmullRom） =======
+function makeControlPoints(count=18, radius=140, radiusVariance=50, heightVariance=8) {
+  const pts = [];
+  for (let i=0;i<count;i++){
+    const a = (i / count) * Math.PI * 2;
+    const r = radius + Math.sin(i*0.7)*radiusVariance*0.6 + Math.cos(i*1.3)*radiusVariance*0.4;
+    const x = Math.cos(a) * r + Math.sin(i*0.9)*8;
+    const z = Math.sin(a) * r + Math.cos(i*1.1)*8;
+    const y = getHeightAt(x,z) + Math.sin(i*1.9)*heightVariance;
+    pts.push(new THREE.Vector3(x,y,z));
+  }
+  return pts;
+}
+const controlPoints = makeControlPoints();
+const path = new THREE.CatmullRomCurve3(controlPoints, true, 'catmullrom', 0.5);
+
+// ======= 路面（Tube） =======
+const tubularSegments = 2400;
+const tubeRadius = SETTINGS.trackHalfWidth;
+const tubeGeo = new THREE.TubeGeometry(path, tubularSegments, tubeRadius, 20, true);
+
+// 頂点高さ補正（地形に合わせつつ上にオフセット）
+const posAttr = tubeGeo.attributes.position;
+const vertexCount = posAttr.count;
+const radialSegments = tubeGeo.parameters.radialSegments || 20;
+const tubularSegs = tubeGeo.parameters.tubularSegments || tubularSegments;
+for (let i=0;i<vertexCount;i++){
+  const segIndex = Math.floor(i / (radialSegments+1));
+  const t = (segIndex % tubularSegs) / tubularSegs;
+  const vx = posAttr.getX(i);
+  const vz = posAttr.getZ(i);
+  const vy = posAttr.getY(i);
+  const terrainY = getHeightAt(vx, vz);
+  const center = path.getPoint(t);
+  const d = Math.sqrt((vx-center.x)*(vx-center.x) + (vz-center.z)*(vz-center.z));
+  const maxD = tubeRadius * 1.2;
+  const w = Math.max(0, 1 - (d / maxD));
+  const targetY = terrainY + 0.9; // 路面を地形より上に出す
+  const newY = vy * (1 - w) + targetY * w;
+  posAttr.setY(i, newY);
+}
+tubeGeo.computeVertexNormals();
+
+const trackMat = new THREE.MeshStandardMaterial({ color:0x555555, roughness:0.95 });
+trackMat.polygonOffset = true;
+trackMat.polygonOffsetFactor = 1.0;
+trackMat.polygonOffsetUnits = 1.0;
+const trackMesh = new THREE.Mesh(tubeGeo, trackMat);
+trackMesh.receiveShadow = true;
+trackMesh.renderOrder = 1;
+scene.add(trackMesh);
+
+// ======= 路肩ライン =======
+const edgeGeo = new THREE.TubeGeometry(path, tubularSegments, tubeRadius+0.4, 6, true);
+const edgeMat = new THREE.MeshBasicMaterial({ color:0xffffff, transparent:true, opacity:0.06 });
+const edgeMesh = new THREE.Mesh(edgeGeo, edgeMat);
+edgeMesh.renderOrder = 2;
+scene.add(edgeMesh);
+
+// ======= 中心線サンプル（最近接検索用） =======
+const CENTER_SAMPLES = [];
+for (let i=0;i<SETTINGS.centerSampleCount;i++){
+  CENTER_SAMPLES.push(path.getPoint(i / SETTINGS.centerSampleCount));
+}
+function findClosestOnCenter(pos) {
+  let bestIdx = 0;
+  let bestD = Infinity;
+  const stride = 4;
+  for (let i=0;i<CENTER_SAMPLES.length;i+=stride){
+    const d = CENTER_SAMPLES[i].distanceToSquared(pos);
+    if (d < bestD) { bestD = d; bestIdx = i; }
+  }
+  const start = Math.max(0, bestIdx - 64);
+  const end = Math.min(CENTER_SAMPLES.length-1, bestIdx + 64);
+  for (let i=start;i<=end;i++){
+    const d = CENTER_SAMPLES[i].distanceToSquared(pos);
+    if (d < bestD) { bestD = d; bestIdx = i; }
+  }
+  const t = bestIdx / CENTER_SAMPLES.length;
+  const center = path.getPoint(t);
+  const eps = 1e-4;
+  const pA = path.getPoint((t - eps + 1) % 1);
+  const pB = path.getPoint((t + eps) % 1);
+  const tangent = pB.clone().sub(pA).normalize();
+  const normal = new THREE.Vector3().crossVectors(tangent, new THREE.Vector3(0,1,0)).normalize();
+  return { t, point: center, tangent, normal };
+}
+
+// ======= フェンス生成（左右に配置） =======
+const fenceGroup = new THREE.Group();
+scene.add(fenceGroup);
+const fencePostGeo = new THREE.BoxGeometry(0.3, SETTINGS.fenceHeight, 0.3);
+const fencePostMat = new THREE.MeshStandardMaterial({ color:0x6b4f3b });
+const fenceRailGeo = new THREE.BoxGeometry(1, 0.12, 0.12);
+const fenceRailMat = new THREE.MeshStandardMaterial({ color:0x333333 });
+
+const fenceCollisionData = []; // {pos, radius}
+
+function buildFences() {
+  const sampleCount = Math.floor(path.getLength() / SETTINGS.fenceSpacing) * 2;
+  for (let i=0;i<sampleCount;i++){
+    const t = i / sampleCount;
+    const center = path.getPoint(t);
+    const eps = 1e-4;
+    const pA = path.getPoint((t - eps + 1) % 1);
+    const pB = path.getPoint((t + eps) % 1);
+    const tangent = pB.clone().sub(pA).normalize();
+    const normal = new THREE.Vector3().crossVectors(tangent, new THREE.Vector3(0,1,0)).normalize();
+    for (const side of [-1, 1]) {
+      const offset = normal.clone().multiplyScalar(side * (SETTINGS.trackHalfWidth + 2.2));
+      const pos = center.clone().add(offset);
+      // post
+      const post = new THREE.Mesh(fencePostGeo, fencePostMat);
+      post.position.copy(pos);
+      post.position.y += SETTINGS.fenceHeight/2;
+      post.lookAt(center);
+      fenceGroup.add(post);
+      // rail (two rails)
+      const rail1 = new THREE.Mesh(fenceRailGeo, fenceRailMat);
+      rail1.position.copy(pos).add(new THREE.Vector3(0, SETTINGS.fenceHeight*0.35, 0));
+      rail1.scale.set(1.8,1,1);
+      rail1.lookAt(center);
+      fenceGroup.add(rail1);
+      const rail2 = new THREE.Mesh(fenceRailGeo, fenceRailMat);
+      rail2.position.copy(pos).add(new THREE.Vector3(0, -SETTINGS.fenceHeight*0.05, 0));
+      rail2.scale.set(1.8,1,1);
+      rail2.lookAt(center);
+      fenceGroup.add(rail2);
+      // collision sphere approx
+      fenceCollisionData.push({ pos: pos.clone(), radius: SETTINGS.fenceCollisionRadius });
+    }
+  }
+}
+buildFences();
+
+// ======= 木の配置（フェンスの外側にのみ） =======
+const trunkGeo = new THREE.CylinderGeometry(0.6,0.6,6,6);
+const leavesGeo = new THREE.ConeGeometry(3.5,8,8);
+const trunkMat = new THREE.MeshStandardMaterial({ color:0x8b5a2b });
+const leavesMat = new THREE.MeshStandardMaterial({ color:0x0b6623 });
+const trunkInst = new THREE.InstancedMesh(trunkGeo, trunkMat, SETTINGS.treeCount);
+const leavesInst = new THREE.InstancedMesh(leavesGeo, leavesMat, SETTINGS.treeCount);
+trunkInst.castShadow = true; leavesInst.castShadow = true;
+scene.add(trunkInst); scene.add(leavesInst);
+
+const spatialGrid = new Map();
+function cellKey(x,z){ const cs=SETTINGS.spatialCellSize; return `${Math.floor(x/cs)},${Math.floor(z/cs)}`; }
+function addGrid(x,z,i){ const k=cellKey(x,z); if(!spatialGrid.has(k)) spatialGrid.set(k,[]); spatialGrid.get(k).push(i); }
+
+const treeData = [];
+let placed = 0, attempts = 0;
+while (placed < SETTINGS.treeCount && attempts < SETTINGS.treeCount*12) {
+  attempts++;
+  const t = Math.random();
+  const center = path.getPoint(t);
+  const sample = findClosestOnCenter(center);
+  const normal = sample.normal;
+  const side = Math.random() < 0.5 ? 1 : -1;
+  const dist = SETTINGS.trackHalfWidth + 4 + Math.random()*140; // フェンス外側に確実に出す
+  const x = center.x + normal.x * dist * side + (Math.random()-0.5)*8;
+  const z = center.z + normal.z * dist * side + (Math.random()-0.5)*8;
+  const closest = findClosestOnCenter(new THREE.Vector3(x,0,z));
+  const dToCenter = Math.sqrt(closest.point.distanceToSquared(new THREE.Vector3(x,0,z)));
+  if (dToCenter < SETTINGS.trackHalfWidth + 3.5) continue;
+  const y = getHeightAt(x,z);
+  let tooClose = false;
+  for (const td of treeData) {
+    if (td.pos.distanceToSquared(new THREE.Vector3(x,y,z)) < (td.radius + 4)*(td.radius + 4)) { tooClose = true; break; }
+  }
+  if (tooClose) continue;
+  const scale = 0.7 + Math.random()*1.3;
+  const m = new THREE.Matrix4();
+  const pos = new THREE.Vector3(x, y + (3*scale), z);
+  m.compose(pos, new THREE.Quaternion().setFromEuler(new THREE.Euler(0, Math.random()*Math.PI*2, 0)), new THREE.Vector3(scale, scale, scale));
+  trunkInst.setMatrixAt(placed, m);
+  const m2 = new THREE.Matrix4();
+  const leavesPos = new THREE.Vector3(x, y + (8*scale), z);
+  m2.compose(leavesPos, new THREE.Quaternion().setFromEuler(new THREE.Euler(0, Math.random()*Math.PI*2, 0)), new THREE.Vector3(scale, scale, scale));
+  leavesInst.setMatrixAt(placed, m2);
+  const radius = 3.5 * scale;
+  treeData.push({ pos: new THREE.Vector3(x,y,z), radius, instIndex: placed, collided:false });
+  addGrid(x,z, placed);
+  placed++;
+}
+trunkInst.instanceMatrix.needsUpdate = true;
+leavesInst.instanceMatrix.needsUpdate = true;
+
+// ======= 車: carRoot と carVisual の分離（見た目崩れ対策） =======
+const carRoot = new THREE.Group();
+const carVisual = new THREE.Group();
+carRoot.add(carVisual);
+
+const body = new THREE.Mesh(new THREE.BoxGeometry(4,1.2,7), new THREE.MeshStandardMaterial({ color:0xff0000 }));
+body.position.y = 1.0; body.castShadow = true; carVisual.add(body);
+
+function makeWheelMesh(){ const w=new THREE.Mesh(new THREE.CylinderGeometry(0.7,0.7,0.6,12), new THREE.MeshStandardMaterial({ color:0x111111 })); w.rotation.z=Math.PI/2; w.castShadow=true; return w; }
+const wheelFL = makeWheelMesh(); wheelFL.position.set(-1.6,0.6,2.5); carVisual.add(wheelFL);
+const wheelFR = makeWheelMesh(); wheelFR.position.set(1.6,0.6,2.5); carVisual.add(wheelFR);
+const wheelRL = makeWheelMesh(); wheelRL.position.set(-1.6,0.6,-2.5); carVisual.add(wheelRL);
+const wheelRR = makeWheelMesh(); wheelRR.position.set(1.6,0.6,-2.5); carVisual.add(wheelRR);
+
+scene.add(carRoot);
+
+// ======= アップグレード保存 =======
+let upgrades = {
+  speed: parseFloat(localStorage.getItem('r_speed') || '1.0'),
+  handling: parseFloat(localStorage.getItem('r_handling') || '1.0'),
+  grip: parseFloat(localStorage.getItem('r_grip') || '1.0'),
+  money: parseInt(localStorage.getItem('r_money') || '300', 10)
+};
+document.getElementById('stat-speed').textContent = upgrades.speed.toFixed(2);
+document.getElementById('stat-handling').textContent = upgrades.handling.toFixed(2);
+document.getElementById('stat-grip').textContent = upgrades.grip.toFixed(2);
+document.getElementById('money').textContent = upgrades.money;
+
+// ======= 入力 =======
+const keys = { forward:false, back:false, left:false, right:false };
+window.addEventListener('keydown', e => {
+  if (e.key==='w'||e.key==='ArrowUp') keys.forward=true;
+  if (e.key==='s'||e.key==='ArrowDown') keys.back=true;
+  if (e.key==='a'||e.key==='ArrowLeft') keys.left=true;
+  if (e.key==='d'||e.key==='ArrowRight') keys.right=true;
+  if (e.key==='c'||e.key==='C') camMode = camMode === CAM_MODES.CHASE ? CAM_MODES.COCKPIT : CAM_MODES.CHASE;
+});
+window.addEventListener('keyup', e => {
+  if (e.key==='w'||e.key==='ArrowUp') keys.forward=false;
+  if (e.key==='s'||e.key==='ArrowDown') keys.back=false;
+  if (e.key==='a'||e.key==='ArrowLeft') keys.left=false;
+  if (e.key==='d'||e.key==='ArrowRight') keys.right=false;
+});
+
+// ======= 衝突処理（空間ハッシュ＋フェンス衝突） =======
+let collisionCount = 0;
+function nearbyTreeIndices(x,z){
+  const cs=SETTINGS.spatialCellSize;
+  const ix=Math.floor(x/cs), iz=Math.floor(z/cs);
+  const set=new Set();
+  for(let dx=-1;dx<=1;dx++) for(let dz=-1;dz<=1;dz++){
+    const key=`${ix+dx},${iz+dz}`;
+    const arr=spatialGrid.get(key);
+    if(arr) for(const a of arr) set.add(a);
+  }
+  return Array.from(set);
+}
+function checkTreeCollisions(){
+  const carPos = carRoot.position.clone();
+  const carRadius = 2.5;
+  const nearby = nearbyTreeIndices(carPos.x, carPos.z);
+  for(const idx of nearby){
+    const t = treeData[idx];
+    if(!t || t.collided) continue;
+    const d2 = carPos.distanceToSquared(t.pos);
+    const rSum = carRadius + t.radius;
+    if(d2 < rSum*rSum){
+      t.collided = true;
+      collisionCount++;
+      document.getElementById('collisions').textContent = collisionCount;
+      const dir = carPos.clone().sub(t.pos).normalize();
+      state.speed *= 0.35;
+      state.pos.addScaledVector(dir, 3.0);
+      const m = new THREE.Matrix4();
+      const q = new THREE.Quaternion().setFromEuler(new THREE.Euler((Math.random()-0.5)*0.4, Math.random()*Math.PI*2, (Math.random()-0.5)*0.4));
+      const pos = t.pos.clone().add(new THREE.Vector3(0,3,0));
+      m.compose(pos, q, new THREE.Vector3(1,1,1));
+      trunkInst.setMatrixAt(t.instIndex, m);
+      trunkInst.instanceMatrix.needsUpdate = true;
+      const msg = document.getElementById('messages');
+      msg.textContent = '木に衝突しました！速度が低下しました';
+      setTimeout(()=>{ if(msg.textContent==='木に衝突しました！速度が低下しました') msg.textContent=''; }, 2000);
+    }
+  }
+}
+function checkFenceCollisions() {
+  const carPos = carRoot.position.clone();
+  for (const f of fenceCollisionData) {
+    const d2 = carPos.distanceToSquared(f.pos);
+    const rSum = 1.6 + f.radius;
+    if (d2 < rSum*rSum) {
+      // 衝突: ノックバックと速度低下
+      const dir = carPos.clone().sub(f.pos).normalize();
+      state.speed *= 0.25;
+      state.pos.addScaledVector(dir, 2.5);
+      const msg = document.getElementById('messages');
+      msg.textContent = 'フェンスに衝突しました';
+      setTimeout(()=>{ if(msg.textContent==='フェンスに衝突しました') msg.textContent=''; }, 1200);
+      // small visual tilt
+      carVisual.rotation.z = (Math.random()-0.5)*0.6;
+    }
+  }
+}
+
+// ======= Raycaster 下向き =======
+const downRay = new THREE.Raycaster();
+downRay.ray.direction.set(0,-1,0);
+
+// ======= 車状態 =======
+const state = { pos: path.getPoint(0).clone(), forward: new THREE.Vector3(0,0,-1), yaw: 0, speed: 0 };
+
+// ======= カメラ =======
+const CAM_MODES = { CHASE:'CHASE', COCKPIT:'COCKPIT' };
+let camMode = CAM_MODES.CHASE;
+
+// ======= メインループ =======
+let last = performance.now();
+function animate(now){
+  const dt = Math.min(0.05, (now - last)/1000);
+  last = now;
+
+  // 加速
+  const accel = (keys.forward?1:0) - (keys.back?0.5:0);
+  const targetSpeed = SETTINGS.baseSpeed * upgrades.speed * 60;
+  state.speed += accel * 40 * dt;
+  const gripFactor = 1.0 + upgrades.grip * 0.5;
+  state.speed *= Math.max(0.92, 1 - 0.02 * (1/gripFactor));
+  state.speed = Math.max(-20, Math.min(targetSpeed, state.speed));
+
+  // ハンドリング
+  const turn = (keys.left?1:0) - (keys.right?1:0);
+  const handlingEffect = upgrades.handling * 0.95;
+  const speedFactor = 1 - Math.min(Math.abs(state.speed)/targetSpeed, 1);
+  const yawChange = turn * 1.6 * handlingEffect * (0.4 + 0.6 * speedFactor);
+  state.yaw += yawChange * dt * (state.speed>=0 ? 1 : 0.6);
+
+  state.forward.set(Math.sin(state.yaw), 0, Math.cos(state.yaw)).normalize();
+
+  // 自由移動
+  state.pos.addScaledVector(state.forward, state.speed * dt);
+
+  // 最近接中心線取得
+  const sample = findClosestOnCenter(state.pos);
+  const center = sample.point;
+  const tangent = sample.tangent;
+  const normal = sample.normal;
+
+  // ラテラルオフセット（トラック外でも出られるがペナルティ）
+  const rel = state.pos.clone().sub(center);
+  const lateral = rel.dot(normal);
+  const maxLat = SETTINGS.trackHalfWidth;
+  const offroad = Math.abs(lateral) > maxLat;
+  if (offroad) {
+    // オフロード時は減速（摩擦増）
+    state.speed *= Math.pow(SETTINGS.offroadDrag, dt*60);
+  }
+
+  // Raycast で路面高さ取得（優先）
+  const rayOrigin = state.pos.clone().add(new THREE.Vector3(0, 8, 0));
+  downRay.ray.origin.copy(rayOrigin);
+  const intersects = downRay.intersectObject(trackMesh, true);
+  let trackY = null;
+  let trackNormal = null;
+  if (intersects && intersects.length > 0) {
+    trackY = intersects[0].point.y;
+    trackNormal = intersects[0].face ? intersects[0].face.normal.clone().applyMatrix3(new THREE.Matrix3().getNormalMatrix(intersects[0].object.matrixWorld)).normalize() : new THREE.Vector3(0,1,0);
+  } else {
+    trackY = getHeightAt(state.pos.x, state.pos.z) + 0.9;
+    trackNormal = new THREE.Vector3(0,1,0);
+  }
+
+  // 車底オフセット追従
+  const carBaseOffset = 1.2;
+  state.pos.y += (trackY + carBaseOffset - state.pos.y) * Math.min(1, 12 * dt);
+
+  // 見た目のロール/ピッチを carVisual に適用
+  const forwardOnGround = state.forward.clone().projectOnPlane(trackNormal).normalize();
+  const rightOnGround = new THREE.Vector3().crossVectors(trackNormal, forwardOnGround).normalize();
+  const m = new THREE.Matrix4();
+  m.makeBasis(rightOnGround, trackNormal, forwardOnGround.clone().negate());
+  const q = new THREE.Quaternion().setFromRotationMatrix(m);
+  carVisual.quaternion.slerp(q, 0.12);
+
+  // 物理位置と回転は carRoot で管理
+  carRoot.position.copy(state.pos);
+  carRoot.rotation.y = state.yaw;
+
+  // 衝突判定
+  checkTreeCollisions();
+  checkFenceCollisions();
+
+  // カメラ
+  let desiredCamPos = new THREE.Vector3();
+  let lookAtTarget = state.pos.clone().add(new THREE.Vector3(0,2,0));
+  if (camMode === CAM_MODES.CHASE) {
+    const camOffset = new THREE.Vector3(0, 6, 18).applyAxisAngle(new THREE.Vector3(0,1,0), state.yaw + Math.PI);
+    desiredCamPos.copy(state.pos).add(camOffset);
+  } else {
+    const forwardOffset = new THREE.Vector3(0, 1.6, -2.2).applyAxisAngle(new THREE.Vector3(0,1,0), state.yaw);
+    desiredCamPos.copy(state.pos).add(forwardOffset);
+    lookAtTarget = state.pos.clone().add(new THREE.Vector3(0,1.6, 10).applyAxisAngle(new THREE.Vector3(0,1,0), state.yaw));
+  }
+  camera.position.lerp(desiredCamPos, 0.12);
+  camera.lookAt(lookAtTarget);
+
+  document.getElementById('hud-speed').textContent = Math.round(state.speed*3.6);
+
+  renderer.render(scene, camera);
+  requestAnimationFrame(animate);
+}
+requestAnimationFrame(animate);
+
+// ======= リサイズ =======
+window.addEventListener('resize', () => {
+  camera.aspect = window.innerWidth/window.innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(window.innerWidth, window.innerHeight);
+});
+
+// ======= UI: アップグレード =======
+function saveUpgrades(){ localStorage.setItem('r_speed', upgrades.speed.toString()); localStorage.setItem('r_handling', upgrades.handling.toString()); localStorage.setItem('r_grip', upgrades.grip.toString()); localStorage.setItem('r_money', upgrades.money.toString()); }
+document.getElementById('upgrade-speed').addEventListener('click', ()=>{ if(upgrades.money>=100){ upgrades.money-=100; upgrades.speed=Math.round((upgrades.speed+0.2)*100)/100; document.getElementById('stat-speed').textContent=upgrades.speed.toFixed(2); document.getElementById('money').textContent=upgrades.money; saveUpgrades(); } else alert('所持金が足りません'); });
+document.getElementById('upgrade-handling').addEventListener('click', ()=>{ if(upgrades.money>=80){ upgrades.money-=80; upgrades.handling=Math.round((upgrades.handling+0.1)*100)/100; document.getElementById('stat-handling').textContent=upgrades.handling.toFixed(2); document.getElementById('money').textContent=upgrades.money; saveUpgrades(); } else alert('所持金が足りません'); });
+document.getElementById('upgrade-grip').addEventListener('click', ()=>{ if(upgrades.money>=80){ upgrades.money-=80; upgrades.grip=Math.round((upgrades.grip+0.1)*100)/100; document.getElementById('stat-grip').textContent=upgrades.grip.toFixed(2); document.getElementById('money').textContent=upgrades.money; saveUpgrades(); } else alert('所持金が足りません'); });
+document.getElementById('reset').addEventListener('click', ()=>{ if(confirm('アップグレードをリセットしますか')){ upgrades={speed:1.0,handling:1.0,grip:1.0,money:300}; document.getElementById('stat-speed').textContent=upgrades.speed.toFixed(2); document.getElementById('stat-handling').textContent=upgrades.handling.toFixed(2); document.getElementById('stat-grip').textContent=upgrades.grip.toFixed(2); document.getElementById('money').textContent=upgrades.money; saveUpgrades(); } });
+
+// OrbitControls デバッグ用（無効）
+const controls = new THREE.OrbitControls(camera, renderer.domElement);
+controls.enabled = false;
+
+// 初期位置
+state.pos.copy(path.getPoint(0));
+state.yaw = 0;
+
+</script>
+</body>
+</html>
